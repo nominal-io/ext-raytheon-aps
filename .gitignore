@@ -1,0 +1,8 @@
+.env
+*.mp4
+*.wav
+*.sc16
+*.gray
+ir_export/
+__pycache__/
+*.pyc
