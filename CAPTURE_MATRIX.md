@@ -9,6 +9,26 @@ datasets: **DIS Ground Truth**, **UCI C2 Messages**, **Raw Sensor Streams**,
 asset; each capture session is a Nominal run; state transitions become Nominal
 events.
 
+
+## At a glance
+
+| Output | Captured? | How / why not |
+|---|---|---|
+| DIS EntityState multicast (5 Hz truth) | Yes | Per-entity position/velocity/attitude channels + events; raw PDUs logged verbatim |
+| UCI via Sleet OWP (7 live message types) | Yes | Typed channels + state-transition events; full JSONL preserved |
+| Squall IR frames (mono8 320x200 @ 8 fps) | Yes | Frame-stat channels + synced H.264 video channel; raw frame ring |
+| Squall RF IQ (SC16 2.048 Msps @ 915 MHz) | Yes | Level/clip/spectral channels + spectrogram waterfall video; 2 s SC16 snapshots w/ sidecars |
+| FM demod audio (S16LE 32 kHz) | Yes | Level/activity channels; WAV segments attached |
+| Prometheus metrics (6 services) + Couloir gRPC status | Yes | Observability channels; sensor mode/LOS channels + events |
+| 4 idle UCI topics + RoutePlan | Subscribed | Zero traffic in this kit; RoutePlan can't publish (kit's sleet auth omits the topic) |
+| JSBSim consoles | No | Single-client FDM control link; tapping risks corrupting the sim; state arrives via DIS/UCI |
+| FlightGear ctrl/FDM | No | Manned-flight option, inactive in default scenario; no packets exist |
+| OTLP traces | No | Disabled by default; Nominal has no trace resource (span metrics come via Prometheus) |
+| Graupel CZML | No | Rendering document; lossy re-encoding of DIS+UCI already captured at source |
+| Worldview UI / tile server | No | Browser frontend; no telemetry content |
+| Couloir commands / LA-CAL harness | No | Inputs and dev tooling, not outputs; effects visible in captured status channels |
+| RTL-SDR / HackRF health ports | N/A | Hardware-in-the-loop only; auto-captured by the same scraper if HITL compose is used |
+
 ## Data-plane outputs
 
 | Output | Port / Proto | Producer | Captured? | How it lands in Nominal |
