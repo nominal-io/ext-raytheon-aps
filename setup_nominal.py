@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Create the Nominal resources for the AMS GRA Hello World demo and emit .env.
+"""Create or map the Nominal resources for the AMS GRA Hello World demo, and emit .env.
 
-Idempotent: searches for resources by exact name before creating.
-Writes RIDs + token into nominal-demo/.env for docker compose.
+By default this is idempotent: each dataset is found by exact name and reused,
+or created if absent. To map the streams onto datasets you already have instead,
+pass their RIDs explicitly:
+
+    setup_nominal.py <profile>                              # find-or-create by name
+    setup_nominal.py <profile> --ds-dis <rid> --ds-uci <rid> \
+                     --ds-sensor <rid> --ds-obs <rid>       # map to existing datasets
+
+Any subset of the --ds-* flags works; unspecified stream families fall back to
+find-or-create. Writes RIDs + credentials into .env for docker compose.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,9 +23,22 @@ from pathlib import Path
 from nominal.core.client import NominalClient
 from nominal.config import NominalConfig
 
-PROFILE = sys.argv[1] if len(sys.argv) > 1 else None
-if PROFILE is None:
-    sys.exit("usage: setup_nominal.py <nominal-profile-name>  (no default on purpose)")
+parser = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+parser.add_argument("profile", help="Nominal config profile name")
+parser.add_argument("--ds-dis", help="Existing dataset RID for DIS ground truth")
+parser.add_argument("--ds-uci", help="Existing dataset RID for UCI C2 messages")
+parser.add_argument("--ds-sensor", help="Existing dataset RID for raw sensor streams")
+parser.add_argument("--ds-obs", help="Existing dataset RID for observability metrics")
+args = parser.parse_args()
+
+PROFILE = args.profile
+EXISTING = {
+    "NOMINAL_DS_DIS": args.ds_dis,
+    "NOMINAL_DS_UCI": args.ds_uci,
+    "NOMINAL_DS_SENSOR": args.ds_sensor,
+    "NOMINAL_DS_OBS": args.ds_obs,
+}
 
 DATASETS = {
     "NOMINAL_DS_DIS": (
@@ -61,6 +83,11 @@ def main() -> None:
     env: dict[str, str] = {}
 
     for env_key, (name, desc) in DATASETS.items():
+        if EXISTING.get(env_key):
+            ds = client.get_dataset(EXISTING[env_key])
+            print("mapped to existing dataset", ds.name, ds.rid)
+            env[env_key] = ds.rid
+            continue
         ds = find_dataset(client, name)
         if ds is None:
             ds = client.create_dataset(
@@ -117,7 +144,7 @@ def main() -> None:
     env["NOMINAL_ASSET_RID"] = asset.rid
 
     # Extra tag-scoped refs on the mission asset so per-service/subsystem enum
-    # state channels resolve to single series in workbooks.
+    # state channels resolve to a single series in app panels.
     extra_scopes = {
         "uci_svc_ir": (env["NOMINAL_DS_UCI"], {"service": "ir-search-and-track"}),
         "uci_svc_rf": (env["NOMINAL_DS_UCI"], {"service": "rf-fm-demod"}),
