@@ -1,0 +1,212 @@
+# AMS GRA Hello World Starter Kit — Nominal integration deployment
+#
+# Flat translation of the getting-started bundle compose (podman) to Docker,
+# plus a `nominal-bridge` service that taps every capturable output stream
+# and forwards it to Nominal.
+#
+# All sim services run with network_mode: host (inside the Docker Desktop VM)
+# so DIS multicast on 239.1.2.3:21100/lo works exactly as in the reference
+# deployment. Sleet is port-published (21402->9000) as upstream does.
+
+x-jsbsim: &jsbsim-base
+  image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sim/supercell/jsbsim:latest
+  network_mode: host
+  stop_grace_period: 1s
+  restart: on-failure
+
+services:
+  # ── JSBSim flight dynamics ────────────────────────────────────────────────
+  supercell-jsbsim-bandit:
+    <<: *jsbsim-base
+    container_name: supercell-jsbsim-bandit
+    command: ["--aircraft=bandit1", "--initfile=reset00"]
+
+  supercell-jsbsim-bandit-2:
+    <<: *jsbsim-base
+    container_name: supercell-jsbsim-bandit-2
+    command: ["--aircraft=bandit2", "--initfile=reset00"]
+
+  supercell-jsbsim-ownship:
+    <<: *jsbsim-base
+    container_name: supercell-jsbsim-ownship
+    command: ["--aircraft=eagle1", "--initfile=reset00"]
+
+  # ── Environment sim ───────────────────────────────────────────────────────
+  supercell:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sim/supercell:latest
+    container_name: supercell
+    network_mode: host
+    depends_on:
+      - supercell-jsbsim-bandit
+      - supercell-jsbsim-bandit-2
+      - supercell-jsbsim-ownship
+      - sleet
+    command: --config /config/default.toml
+    environment:
+      RUST_LOG: ${SUPERCELL_LOG_LEVEL:-info}
+      SUPERCELL_NAMESPACE_UUID: ${NAMESPACE_UUID}
+      SUPERCELL_MISSION_NAME: ${MISSION_NAME}
+    restart: on-failure
+
+  # ── LA-CAL (OMS message router) ───────────────────────────────────────────
+  sleet:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/infra/sleet:latest
+    container_name: sleet
+    ports:
+      - "21402:9000"
+      - "21312:21312"
+    command: ["/opt/sleet/config/server.toml"]
+    volumes:
+      - ./sleet-services.d/nominal-bridge.toml:/opt/sleet/config/services.d/nominal-bridge.toml:ro
+    environment:
+      RUST_LOG: ${SLEET_LOG_LEVEL:-sleet=info}
+      SLEET_NAMESPACE_UUID: ${NAMESPACE_UUID}
+      SLEET_MISSION_NAME: ${MISSION_NAME}
+
+  # ── Squall MFA (sensor hardware sim) ──────────────────────────────────────
+  couloir:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sensors/squall/couloir:latest
+    container_name: couloir
+    network_mode: host
+    entrypoint: ["/usr/local/bin/couloir"]
+    command: --config /config/couloir.toml
+    volumes:
+      - backend-sockets:/sockets
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/21203"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  squall-rf:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sensors/squall/rf:latest
+    container_name: squall-rf
+    network_mode: host
+    entrypoint: ["/usr/local/bin/squall-rf"]
+    command: --config /config/rf-simulated.toml
+    environment:
+      SQUALL_RF_HEALTH_ADDRESS: 0.0.0.0
+      SQUALL_RF_HEALTH_PORT: "21313"
+      SQUALL_RF_METRICS_PORT: "21314"
+      SQUALL_RF_DATA_PORT: "21601"
+      SQUALL_NAMESPACE_UUID: ${NAMESPACE_UUID}
+      SQUALL_MISSION_NAME: ${MISSION_NAME}
+    volumes:
+      - backend-sockets:/sockets
+
+  squall-optical:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sensors/squall/ir:latest
+    container_name: squall-optical
+    network_mode: host
+    entrypoint: ["/usr/local/bin/squall-optical"]
+    command: --config /config/optical-simulated.toml
+    environment:
+      SQUALL_OPTICAL_HEALTH_ADDRESS: 0.0.0.0
+      SQUALL_OPTICAL_HEALTH_PORT: "21315"
+      SQUALL_OPTICAL_METRICS_PORT: "21316"
+      SQUALL_IR_DATA_PORT: "21600"
+    volumes:
+      - backend-sockets:/sockets
+
+  squall-rf-oms-adapter:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sensors/squall/oms-rf-adapter:latest
+    container_name: squall-rf-oms-adapter
+    network_mode: host
+    environment:
+      SQUALL_RF_CTRL_ADDR: 127.0.0.1:21203
+      SQUALL_RF_DATA_HOST: 127.0.0.1
+      NAMESPACE_UUID: ${NAMESPACE_UUID}
+      GRPC_DNS_RESOLVER: native
+      SQUALL_MEL_PROFILE: /config/squall-rf-mel-profile.json
+    volumes:
+      - backend-sockets:/sockets
+    depends_on:
+      couloir:
+        condition: service_healthy
+    command: --config /config/squall-rf-oms-adapter.toml
+
+  squall-ir-oms-adapter:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/sensors/squall/oms-ir-adapter:latest
+    container_name: squall-ir-oms-adapter
+    network_mode: host
+    environment:
+      SQUALL_OPTICAL_CTRL_ADDR: 127.0.0.1:21203
+      SQUALL_OPTICAL_DATA_HOST: 127.0.0.1
+      NAMESPACE_UUID: ${NAMESPACE_UUID}
+      GRPC_DNS_RESOLVER: native
+      SQUALL_MEL_PROFILE: /config/squall-ir-mel-profile.json
+    volumes:
+      - backend-sockets:/sockets
+    depends_on:
+      couloir:
+        condition: service_healthy
+    command: --config /config/squall-ir-oms-adapter.toml
+
+  # ── Skills (data processors) ──────────────────────────────────────────────
+  ir-search-and-track-skill:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/skills/ir-search-and-track:latest
+    container_name: ir-search-and-track-skill
+    restart: on-failure
+    environment:
+      IR_SEARCH_SKILL_NAMESPACE_UUID: ${NAMESPACE_UUID}
+      IR_SEARCH_SKILL_SLEET_BIND_PORT: "21402"
+      IR_SEARCH_SKILL_MISSION_NAME: ${MISSION_NAME}
+    network_mode: host
+    depends_on:
+      - sleet
+      - couloir
+
+  rf-fm-demod-skill:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/skills/rf-fm-demod:latest
+    container_name: rf-fm-demod-skill
+    restart: on-failure
+    environment:
+      RF_FM_SKILL_OWP_PORT: "21402"
+      RF_FM_SKILL_MISSION_NAME: ${MISSION_NAME}
+      RF_FM_SKILL_LOG_LEVEL: info
+      RF_FM_SKILL_NAMESPACE_UUID: ${NAMESPACE_UUID}
+    network_mode: host
+    depends_on:
+      - sleet
+      - couloir
+
+  # ── Visualization bridge (DIS+UCI -> CZML) ────────────────────────────────
+  graupel:
+    image: registry.gitlab.com/open-arsenal/ams-gra/hello-world-sk/viz/graupel:latest
+    container_name: graupel
+    network_mode: host
+    command: --config /config/graupel.toml
+    environment:
+      RUST_LOG: ${GRAUPEL_LOG_LEVEL:-info}
+      GRAUPEL_HEALTH_PORT: "21401"
+      GRAUPEL_NAMESPACE_UUID: ${NAMESPACE_UUID}
+      GRAUPEL_MISSION_NAME: ${MISSION_NAME}
+    restart: unless-stopped
+
+  # ── Nominal bridge ────────────────────────────────────────────────────────
+  nominal-bridge:
+    build: ./bridge
+    container_name: nominal-bridge
+    network_mode: host
+    restart: on-failure
+    environment:
+      NOMINAL_BASE_URL: ${NOMINAL_BASE_URL}
+      NOMINAL_TOKEN: ${NOMINAL_TOKEN}
+      NOMINAL_WORKSPACE_RID: ${NOMINAL_WORKSPACE_RID}
+      NOMINAL_RUN_RID: ${NOMINAL_RUN_RID}
+      NOMINAL_DS_DIS: ${NOMINAL_DS_DIS}
+      NOMINAL_DS_UCI: ${NOMINAL_DS_UCI}
+      NOMINAL_DS_SENSOR: ${NOMINAL_DS_SENSOR}
+      NOMINAL_DS_OBS: ${NOMINAL_DS_OBS}
+      NOMINAL_ASSET_RID: ${NOMINAL_ASSET_RID}
+      BRIDGE_IR_TAP_PORT: "21610"
+      BRIDGE_RF_TAP_PORT: "21611"
+    volumes:
+      - bridge-capture:/capture
+    depends_on:
+      - sleet
+      - couloir
+
+volumes:
+  backend-sockets:
+  bridge-capture:

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package squall.optical.control.v1;
+
+// The primary control interface for Squall Optical pipelines.
+// This provides a simplified backend API that the C++ MEL implementation translates
+// complex GRA/UCI commands into.
+service SquallIrControl {
+    // Query the live status of the pipeline (maps to IR HealthStatusChannel)
+    rpc GetStatus (GetStatusRequest) returns (GetStatusResponse);
+
+    // Dynamically register a new UDP destination for the data stream (Data Plane negotiation)
+    rpc AddDataDestination (AddDataDestinationRequest) returns (AddDataDestinationResponse);
+
+    // Explicitly unregister a dynamic UDP destination.
+    rpc RemoveDataDestination (RemoveDataDestinationRequest) returns (RemoveDataDestinationResponse);
+
+    // Send a C2 command to an active Optical (IR) pipeline (maps to IR C2Channel)
+    rpc CommandIr (CommandIrRequest) returns (CommandIrResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+    string name = 1;
+    string domain = 2;          // always "optical"
+    bool running = 3;
+    bool ready = 4;
+    string rest_addr = 5;
+    uint32 metrics_port = 6;
+    uint64 uptime_seconds = 7;
+    
+    // Domain specific status
+    IrStatus ir_status = 8;
+}
+
+// Maps to ams::iface::mel::MFA_State / ams::iface::irmel::MFA_Mode
+enum IrMode {
+    IR_MODE_UNKNOWN = 0;
+    IR_MODE_INITIALIZATION = 1;
+    IR_MODE_MAINTENANCE = 2;
+    IR_MODE_IDLE = 3;
+    IR_MODE_OPERATIONAL = 4;
+}
+
+message IrStatus {
+    IrMode current_mode = 1;
+    uint32 width = 2;
+    uint32 height = 3;
+    float fps = 4;
+    IrLosStatus los_status = 5;
+}
+
+message IrLosStatus {
+    bool los_valid = 1;
+    double configured_boresight_yaw_rad = 2;
+    double configured_boresight_pitch_rad = 3;
+    double pointing_azimuth_rad = 4;
+    double pointing_elevation_rad = 5;
+    bool platform_attitude_valid = 6;
+    double platform_yaw_rad = 7;
+    double platform_pitch_rad = 8;
+    double platform_roll_rad = 9;
+    bool platform_attitude_timestamp_valid = 10;
+    uint64 platform_attitude_timestamp_unix_nanos = 11;
+}
+
+// -------------------------------------------------------------------------
+// Data Plane Negotiation
+// -------------------------------------------------------------------------
+
+message AddDataDestinationRequest {
+    // The IP:port where the client (MEL implementation) is listening for UDP data.
+    // e.g., "127.0.0.1:56789"
+    string udp_destination = 1;
+    // An identity matching the client, used to overwrite orphaned slots on restart.
+    string client_id = 2;
+}
+
+message AddDataDestinationResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+message RemoveDataDestinationRequest {
+    string client_id = 1;
+}
+
+message RemoveDataDestinationResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// -------------------------------------------------------------------------
+// IR Commands
+// -------------------------------------------------------------------------
+
+message CommandIrRequest {
+    oneof command {
+        IrMode set_mode = 1;
+    }
+}
+
+message CommandIrResponse {
+    bool success = 1;
+    string error_message = 2;
+}
