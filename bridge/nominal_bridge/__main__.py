@@ -20,7 +20,10 @@ def _load(args, *, dry_run: bool = False) -> dict:
     if getattr(args, "capture_dir", None):
         cfg["capture_dir"] = args.capture_dir
     from . import sinks, sources  # noqa: F401  (register built-ins)
-    load_plugins(cfg["plugins"])
+    from .util import log
+    loaded = load_plugins(cfg["plugins"])
+    if loaded:
+        log("plugins loaded:", ", ".join(Path(f).name for f in loaded))
     problems = cfgmod.validate(cfg, dry_run=dry_run)
     if problems:
         print(f"{args.config}: {len(problems)} problem(s)", file=sys.stderr)

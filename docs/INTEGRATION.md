@@ -230,6 +230,31 @@ What the bridge does on its side:
   someone else in turn.
 - Run one bridge per kit.
 
+## Podman
+
+Everything here works with Podman, rootless included. Tested with Podman 6.2 and
+podman-compose 1.6: the full kit plus the bridge, the DIS multicast feed, Couloir
+registration, the image tarball, and plugins.
+
+- `podman compose -f compose.bridge.yaml ...` works as written.
+- On RHEL and other SELinux hosts, add `:Z` to bind mounts or the container can't
+  read your config and plugins. That's the most likely first error, and it shows up as
+  "config file not found" or a permission error.
+- Without compose, the equivalent command is:
+
+  ```bash
+  podman run -d --name nominal-bridge --network host --restart on-failure \
+    --env-file .env \
+    -v ./configs/my-lab.yaml:/config/bridge.yaml:ro,Z \
+    -v ./plugins:/plugins:ro,Z \
+    -v nominal-bridge-capture:/capture \
+    --log-opt max-size=20m \
+    nominal-bridge:2.0.0
+  ```
+
+- `--network host` is required. It lets the bridge join the DIS multicast group and
+  reach Sleet and Couloir on the addresses in the config.
+
 ## Networks without a route to Nominal
 
 Build the image where you have internet and carry it over:
