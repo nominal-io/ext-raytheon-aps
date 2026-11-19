@@ -68,21 +68,70 @@ def cmd_types(args) -> None:
           "(anything else goes through the generic flattener)")
 
 
+def _ask_yes(prompt: str) -> bool:
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _choose_dataset(decision, candidates):
+    """Interactive pick when no dataset matched automatically."""
+    if not candidates:
+        return None
+    print(f"\nNo dataset named '{decision.spec['name']}' for stream "
+          f"'{decision.key}'. Similar ones in this workspace:")
+    for i, ds in enumerate(candidates, 1):
+        print(f"  {i}. {ds.name}")
+    print("  n. create a new one")
+    while True:
+        try:
+            ans = input(f"Use which for '{decision.key}'? [n] ").strip().lower()
+        except EOFError:
+            return None
+        if ans in ("", "n", "new"):
+            return None
+        if ans.isdigit() and 1 <= int(ans) <= len(candidates):
+            return candidates[int(ans) - 1]
+        print("  enter a number from the list, or n")
+
+
 def cmd_provision(args) -> None:
     from .provision import provision, write_env
+    profile_url = None
+    if args.profile:
+        from nominal.config import NominalConfig
+        prof = NominalConfig.from_yaml().profiles.get(args.profile)
+        if prof is None:
+            raise SystemExit(f"error: no Nominal profile named '{args.profile}'. "
+                             "Create one with: nominal config profile add <name> --token ...")
+        profile_url = prof.base_url
+    env_url_before = os.environ.get("NOMINAL_BASE_URL")
     if args.env_file:
         cfgmod.load_env_file(args.env_file)
+    # IDs in .env from a different tenant can't exist here: ignore them, don't fail
+    env_url = env_url_before or os.environ.get("NOMINAL_BASE_URL")
+    env_ok = not (profile_url and env_url and env_url.rstrip("/") != profile_url.rstrip("/"))
+    if not env_ok:
+        print(f"note: .env was written for {env_url}, but profile '{args.profile}' is "
+              f"{profile_url}; ignoring the dataset and asset IDs in .env")
     cfg = cfgmod.load(args.config)
     mapping = dict(m.split("=", 1) for m in args.map or [])
+    interactive = sys.stdin.isatty() and not args.yes and not args.plan
+    mode = "new" if args.new else "existing" if args.existing else "auto"
     try:
         env = provision(cfg.get("model") or {}, profile=args.profile, mapping=mapping,
-                        new_run=not args.no_run)
+                        new_run=not args.no_run, mode=mode, env_ok=env_ok,
+                        choose=_choose_dataset if interactive and mode == "auto" else None,
+                        confirm=(lambda: False) if args.plan else
+                        (lambda: _ask_yes("\nGo ahead? [y/N] ")) if interactive else None)
     except cfgmod.ConfigError as e:
+        if args.plan and "cancelled" in str(e):
+            print("\n--plan: nothing was changed")
+            return
         raise SystemExit(f"error: {e}")
     if args.env_out:
         if args.profile:                 # connection details for the container
-            from nominal.config import NominalConfig
-            prof = NominalConfig.from_yaml().profiles[args.profile]
             env["NOMINAL_BASE_URL"] = prof.base_url
             env["NOMINAL_TOKEN"] = prof.token
             if getattr(prof, "workspace_rid", None):
@@ -129,12 +178,24 @@ def main(argv=None) -> None:
     p.set_defaults(fn=cmd_types)
 
     p = sub.add_parser("provision", help="create or map the Nominal datasets / assets / run "
-                                         "described in the config's `model:` section")
+                                         "described in the config's `model:` section",
+                       description=sys.modules["nominal_bridge.provision"].__doc__
+                       if "nominal_bridge.provision" in sys.modules else None,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
     common(p)
     p.add_argument("--profile", help="Nominal profile (else NOMINAL_TOKEN + NOMINAL_BASE_URL)")
     p.add_argument("--map", action="append", metavar="STREAM=DATASET_RID",
                    help="use an existing dataset for a stream (repeatable)")
     p.add_argument("--no-run", action="store_true", help="do not create a new run")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument("--new", action="store_true",
+                     help="create new datasets and assets even if matching ones exist")
+    how.add_argument("--existing", action="store_true",
+                     help="only use existing datasets; fail instead of creating any")
+    p.add_argument("--plan", action="store_true",
+                   help="show what would be reused or created, change nothing")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="don't ask: skip the confirmation and the dataset picker")
     p.add_argument("--env-out", help="write the resulting RIDs into this env file")
     p.set_defaults(fn=cmd_provision)
 

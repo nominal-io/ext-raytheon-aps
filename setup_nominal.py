@@ -5,11 +5,16 @@ Thin wrapper kept for continuity; it is the same as
 
     nominal-bridge provision -c configs/hello-world-sk.yaml --profile <profile> --env-out .env
 
-Datasets are found by exact name and reused, or created if absent. To map a stream onto
-a dataset you already have, pass --map (repeatable):
+It shows a plan first (reuse which existing datasets, create which new ones) and asks
+before changing anything. For each stream it reuses, in order: a dataset you name with
+--map, the one already in .env (ignored if it's not in this workspace), one with the
+exact name in the config, or one you pick from similar datasets. Otherwise it creates it.
 
-    setup_nominal.py <profile>
-    setup_nominal.py <profile> --map dis=<dataset rid> --map uci=<dataset rid>
+    setup_nominal.py <profile>                              # plan, ask, then apply
+    setup_nominal.py <profile> --plan                       # show the plan only
+    setup_nominal.py <profile> --map dis=<dataset id> --map uci=<dataset id>
+    setup_nominal.py <profile> --new                        # always create new datasets
+    setup_nominal.py <profile> --existing                   # never create; map only
     setup_nominal.py <profile> -c configs/my-lab.yaml
 
 Requires `pip install ./bridge` (public Nominal Python SDK only).

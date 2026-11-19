@@ -53,14 +53,23 @@ to 30 s) and the others keep going.
    Add `--only dis-truth,rf-1` to bring sources up one at a time.
 
 4. Create the Nominal datasets and assets from the `model:` section of the config, or
-   map onto datasets you already have. RIDs and connection details land in `.env`.
+   map onto datasets you already have. It prints a plan (which existing datasets it
+   reuses, which it creates) and asks before changing anything. IDs and connection
+   details land in `.env`.
 
    ```bash
    pip install ./bridge
+   nominal-bridge provision -c configs/my-lab.yaml --profile <profile> --env-out .env --plan
    nominal-bridge provision -c configs/my-lab.yaml --profile <profile> --env-out .env
-   nominal-bridge provision -c configs/my-lab.yaml --profile <profile> --env-out .env \
-       --map dis=<existing dataset rid>
    ```
+
+   For each stream it reuses, in order: a dataset you name with
+   `--map STREAM=<dataset id>`, the one already in `.env` (skipped with a note if it
+   isn't in this workspace, for example after switching tenants), one with the exact
+   name in the config, or one you pick from a list of similar datasets. Anything left
+   is created. `--new` always creates, `--existing` never does, and `-y` skips the
+   questions for scripts. `python setup_nominal.py <profile> -c configs/my-lab.yaml`
+   does the same thing.
 
 5. Start it.
 
