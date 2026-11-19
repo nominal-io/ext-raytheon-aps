@@ -1,0 +1,215 @@
+# nominal-bridge template for a modified / hardware-in-the-loop AMS GRA kit:
+# real RF devices, an EO/IR adapter, extra skills, and a busier truth picture.
+#
+# Lines marked TODO are the facts to fill in for your lab. Everything else can stay.
+# Check your edits without sending anything:
+#
+#   nominal-bridge validate -c /config/bridge.yaml --offline
+#   nominal-bridge run      -c /config/bridge.yaml --dry-run
+#
+# Sources that do not apply can be deleted or switched off with `enabled: false`.
+
+capture_dir: /capture
+plugins: [/plugins]
+
+sinks:
+  - type: nominal
+    max_wait_s: 2                # flush interval
+    # trust_store_path on a target points at a CA bundle if a TLS-inspecting proxy
+    # sits between the lab and Nominal.
+    targets:
+      - name: primary
+        base_url: ${NOMINAL_BASE_URL}
+        token: ${NOMINAL_TOKEN}
+        workspace_rid: ${NOMINAL_WORKSPACE_RID:-}
+        asset_rid: ${NOMINAL_ASSET_RID:-}
+        # trust_store_path: /config/ca-bundle.pem
+        datasets:
+          dis: ${NOMINAL_DS_DIS}
+          uci: ${NOMINAL_DS_UCI}
+          sensor: ${NOMINAL_DS_SENSOR}
+          obs: ${NOMINAL_DS_OBS}
+          adsb: ${NOMINAL_DS_ADSB:-}
+  # No route to Nominal yet? Record locally instead (or as well) and upload later:
+  # - type: jsonl
+  #   dir: /capture/points
+
+events:
+  max_per_minute: 30
+  min_interval_s: 5
+
+health:
+  stream: obs
+
+sources:
+  # ── Truth ────────────────────────────────────────────────────────────────
+  # With ADS-B-derived truth there can be many entities: cap the cardinality and
+  # decimate so each aircraft is one series at a sensible rate.
+  - name: dis-truth
+    type: dis_entity_state
+    stream: dis
+    group: 239.1.2.3             # TODO multicast group (null for broadcast / unicast)
+    port: 21100                  # TODO
+    interfaces: [0.0.0.0, 127.0.0.1]   # TODO local address of the NIC the PDUs arrive on
+    entity_name: marking         # marking | id (site.app.entity) if markings are not unique
+    max_entities: 200
+    min_interval_s: 1.0          # per-entity; 0 keeps every PDU
+    entity_event_limit: 10       # stop raising "entity appeared" after the first 10
+
+  # ── C2: UCI over OWP ─────────────────────────────────────────────────────
+  # Add the messages your skills publish. Anything without a typed handler is flattened
+  # into uci.<message>.* channels automatically; drop a handler into /plugins when
+  # you want specific channel names (see examples/plugins/esm_activity_handler.py).
+  # Every topic listed here must also be allowed for `service_id` in Sleet's
+  # services.d (see sleet-services.d/nominal-bridge.toml).
+  - name: sleet-uci
+    type: uci_owp
+    stream: uci
+    url: ws://127.0.0.1:21402/owp        # TODO Sleet host:port as seen from the bridge
+    service_id: nominal-bridge
+    schema: "002.5.0"
+    topics:
+      - PositionReport
+      - NavigationReport
+      - ObservationMeasurementReport
+      - SignalReport
+      - SubsystemStatus
+      - SystemStatus
+      - ServiceStatus
+      - ESM_Activity
+      - PO_Activity
+      - OperatorNotification
+      # TODO messages from your ESM / ADS-B skills, with the topic if it is not
+      # mission.<message-in-kebab-case>:
+      # - {message: Entity, topic: mission.entity}
+    presence:
+      ObservationMeasurementReport: {label: IR track, timeout_s: 5}
+      SignalReport: {label: ESM signal, timeout_s: 10}
+    generic: {max_fields: 80, max_list_items: 16}
+
+  # ── RF devices ───────────────────────────────────────────────────────────
+  # One block per receiver. With a `couloir:` block the bridge registers itself as a
+  # UDP destination on that Squall RF pipeline and reads sample rate and centre
+  # frequency from it (and follows retunes). Without one, set sample_rate_hz and point
+  # the device's UDP output at `port`.
+  #
+  # IMPORTANT: a `couloir:` block takes one of the pipeline's destination slots. The
+  # Squall config needs one empty `[[sinks]]` entry per consumer (each skill + the
+  # bridge), otherwise the bridge can displace a skill. See "Squall destination slots"
+  # in docs/INTEGRATION.md.
+  - name: rf-1
+    type: udp_iq
+    stream: sensor
+    port: 21611
+    sample_format: sc16le        # TODO sc16le | sc16be | sc8 | cu8 (RTL-SDR native) | cf32le
+    channel_prefix: rf
+    tags: {sensor: rf-1}         # TODO a name you will recognise in Nominal
+    couloir: {address: "127.0.0.1:21203", kind: rf, client_id: nominal-bridge-rf-1,
+              advertise: "127.0.0.1:21611"}    # TODO address the sensor should send to
+    waterfall: {dir: waterfall_rf1}
+    snapshot: {dir: iq_rf1, every_s: 300, duration_s: 2}
+
+  - name: rf-2
+    type: udp_iq
+    enabled: false               # TODO enable for the second receiver
+    stream: sensor
+    port: 21612
+    sample_format: sc16le
+    sample_rate_hz: 2400000      # TODO (only needed without a couloir block)
+    center_frequency_hz: 1090000000   # TODO
+    channel_prefix: rf
+    tags: {sensor: rf-2}
+    waterfall: {dir: waterfall_rf2}
+    snapshot: {dir: iq_rf2}
+
+  # ── EO / IR ──────────────────────────────────────────────────────────────
+  # One block per camera. `udp_frames` expects one raw frame per datagram; set
+  # `reassemble: true` if a frame spans several datagrams. For any other transport
+  # see examples/plugins/tcp_frames_source.py (about 20 lines).
+  - name: tower-ir
+    type: udp_frames
+    stream: sensor
+    port: 21610
+    width: 640                   # TODO
+    height: 512                  # TODO
+    pixel_format: mono8          # TODO mono8 | mono16le | mono16be | rgb8 | bgr8
+    reassemble: true             # 640x512 does not fit one UDP datagram
+    channel_prefix: ir
+    tags: {sensor: tower-ir}
+    record: {every_n: 2, keep: 7200}
+
+  - name: tower-eo
+    type: udp_frames
+    enabled: false               # TODO enable if there is a visible-band channel
+    stream: sensor
+    port: 21613
+    width: 1280
+    height: 720
+    pixel_format: rgb8
+    reassemble: true
+    channel_prefix: eo
+    tags: {sensor: tower-eo}
+
+  # ── ADS-B straight from a receiver (optional) ────────────────────────────
+  # dump1090 / readsb BaseStation output. Leave off if ADS-B only reaches the system
+  # as DIS truth or UCI messages.
+  - name: adsb
+    type: adsb_sbs
+    enabled: false
+    stream: adsb
+    host: 127.0.0.1              # TODO
+    port: 30003
+    max_aircraft: 300
+
+  # ── Any adapter that can print JSON (optional) ───────────────────────────
+  # e.g. tower pointing / gimbal state, one JSON object per UDP datagram.
+  - name: tower-state
+    type: json_lines
+    enabled: false
+    stream: sensor
+    transport: udp
+    port: 21620
+    channel_prefix: tower
+    timestamp_field: t           # ISO-8601 or epoch s / ms / us / ns; receive time if absent
+    tag_fields: {unit: unit}
+
+  # ── Squall control plane and service metrics ─────────────────────────────
+  - name: squall-status
+    type: couloir_status
+    stream: sensor
+    address: 127.0.0.1:21203     # TODO
+    sensors:
+      - {kind: rf, tag: rf-1}
+      # - {kind: ir, tag: tower-ir}
+
+  - name: metrics
+    type: prometheus
+    stream: obs
+    interval_s: 5
+    endpoints:                   # TODO whichever services expose /metrics
+      sleet: http://127.0.0.1:21312/metrics
+      squall-rf: http://127.0.0.1:21314/metrics
+      couloir: http://127.0.0.1:21318/metrics
+
+# ── Nominal data model for `nominal-bridge provision` ────────────────────────
+model:
+  labels: [ams-gra, lab]
+  datasets:
+    dis: {env: NOMINAL_DS_DIS, name: "AMS GRA Lab - Truth (DIS)"}
+    uci: {env: NOMINAL_DS_UCI, name: "AMS GRA Lab - UCI C2 Messages"}
+    sensor: {env: NOMINAL_DS_SENSOR, name: "AMS GRA Lab - Sensor Streams"}
+    obs: {env: NOMINAL_DS_OBS, name: "AMS GRA Lab - Observability"}
+    adsb: {env: NOMINAL_DS_ADSB, name: "AMS GRA Lab - ADS-B"}
+  asset:
+    env: NOMINAL_ASSET_RID
+    name: AMS GRA Integration Lab          # TODO
+    description: Hardware-in-the-loop AMS GRA kit
+    scopes:
+      truth: {stream: dis}
+      uci_c2: {stream: uci}
+      sensors: {stream: sensor}
+      obs_metrics: {stream: obs}
+      adsb: {stream: adsb}
+  run:
+    env: NOMINAL_RUN_RID
+    name: "Lab session %Y-%m-%d %H:%MZ"

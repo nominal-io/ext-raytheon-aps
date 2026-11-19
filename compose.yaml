@@ -184,25 +184,23 @@ services:
     restart: unless-stopped
 
   # ── Nominal bridge ────────────────────────────────────────────────────────
+  # Config-driven; see configs/ and docs/INTEGRATION.md. To use a different config:
+  #   BRIDGE_CONFIG_FILE=./configs/my-lab.yaml docker compose up -d nominal-bridge
   nominal-bridge:
     build: ./bridge
+    image: nominal-bridge:2.0.0
     container_name: nominal-bridge
     network_mode: host
     restart: on-failure
-    environment:
-      NOMINAL_BASE_URL: ${NOMINAL_BASE_URL}
-      NOMINAL_TOKEN: ${NOMINAL_TOKEN}
-      NOMINAL_WORKSPACE_RID: ${NOMINAL_WORKSPACE_RID}
-      NOMINAL_RUN_RID: ${NOMINAL_RUN_RID}
-      NOMINAL_DS_DIS: ${NOMINAL_DS_DIS}
-      NOMINAL_DS_UCI: ${NOMINAL_DS_UCI}
-      NOMINAL_DS_SENSOR: ${NOMINAL_DS_SENSOR}
-      NOMINAL_DS_OBS: ${NOMINAL_DS_OBS}
-      NOMINAL_ASSET_RID: ${NOMINAL_ASSET_RID}
-      BRIDGE_IR_TAP_PORT: "21610"
-      BRIDGE_RF_TAP_PORT: "21611"
+    command: ["run", "-c", "/config/bridge.yaml"]
+    env_file: [.env]                 # NOMINAL_* connection and dataset RIDs
     volumes:
+      - ${BRIDGE_CONFIG_FILE:-./configs/hello-world-sk.yaml}:/config/bridge.yaml:ro
+      - ./plugins:/plugins:ro
       - bridge-capture:/capture
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "3"}
     depends_on:
       - sleet
       - couloir

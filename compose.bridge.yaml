@@ -1,0 +1,29 @@
+# The bridge on its own, for a kit that is already running under its own compose /
+# podman setup (for example a modified or hardware-in-the-loop lab).
+#
+#   cp configs/lab-template.yaml configs/my-lab.yaml      # then edit the TODO lines
+#   docker compose -f compose.bridge.yaml run --rm nominal-bridge validate --offline
+#   docker compose -f compose.bridge.yaml run --rm nominal-bridge run --dry-run
+#   docker compose -f compose.bridge.yaml up -d
+#
+# `podman compose` works the same way. Host networking lets the bridge join the DIS
+# multicast group and reach Sleet / Couloir on the addresses in the config.
+
+services:
+  nominal-bridge:
+    build: ./bridge
+    image: nominal-bridge:2.0.0
+    container_name: nominal-bridge
+    network_mode: host
+    restart: on-failure
+    env_file: [.env]
+    volumes:
+      - ${BRIDGE_CONFIG_FILE:-./configs/my-lab.yaml}:/config/bridge.yaml:ro
+      - ./plugins:/plugins:ro
+      - bridge-capture:/capture
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "3"}
+
+volumes:
+  bridge-capture:

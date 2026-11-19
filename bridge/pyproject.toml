@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nominal-bridge"
+version = "2.0.0"
+description = "Config-driven bridge that streams mission-system and sensor data into Nominal"
+requires-python = ">=3.10"
+dependencies = [
+    "nominal>=1.180.1",
+    "pyyaml>=6",
+    "numpy>=1.26",
+    "websockets>=12",
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "protobuf",
+    "pillow>=10",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+nominal-bridge = "nominal_bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["nominal_bridge*"]
+
+[tool.setuptools.package-data]
+nominal_bridge = ["proto/*.proto"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]
