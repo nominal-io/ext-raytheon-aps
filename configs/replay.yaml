@@ -1,0 +1,45 @@
+# Offline demo / self-test: replays the recorded captures in tests/fixtures through the
+# same sources the live bridge uses. No sim and no Nominal account needed:
+#
+#   nominal-bridge run -c configs/replay.yaml --dry-run --capture-dir /tmp/capture
+#
+# To push the replay into Nominal instead, drop --dry-run and set the variables below.
+
+capture_dir: /capture
+plugins: [../examples/plugins]
+
+sinks:
+  - type: nominal
+    targets:
+      - name: primary
+        base_url: ${NOMINAL_BASE_URL:-https://api.gov.nominal.io/api}
+        token: ${NOMINAL_TOKEN:-}
+        workspace_rid: ${NOMINAL_WORKSPACE_RID:-}
+        datasets: {dis: "${NOMINAL_DS_DIS:-}", uci: "${NOMINAL_DS_UCI:-}", sensor: "${NOMINAL_DS_SENSOR:-}"}
+
+sources:
+  - name: dis-truth
+    type: dis_entity_state
+    stream: dis
+    replay: ${FIXTURES:-tests/fixtures}/dis_sample.bin
+    replay_timestamps: now
+    record: false
+
+  - name: sleet-uci
+    type: uci_owp
+    stream: uci
+    replay: ${FIXTURES:-tests/fixtures}/uci_sample.jsonl
+    replay_timestamps: now
+    record: false
+    save_samples: false
+
+  - name: squall-ir
+    type: udp_frames
+    stream: sensor
+    replay: ${FIXTURES:-tests/fixtures}/ir_frames
+    width: 320
+    height: 200
+    channel_prefix: ir
+    tags: {sensor: squall-ir}
+    record: {enabled: false}
+    snapshot_png_s: 0

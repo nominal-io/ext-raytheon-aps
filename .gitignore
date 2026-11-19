@@ -6,3 +6,12 @@
 ir_export/
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
+fixtures-large/
+*_pb2.py
+*_pb2_grpc.py
+*.egg-info/
+__pycache__/
+dist/
+*.tar.gz

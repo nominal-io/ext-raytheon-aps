@@ -1,21 +1,26 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+LABEL org.opencontainers.image.title="nominal-bridge" \
+      org.opencontainers.image.description="Config-driven bridge that streams mission-system and sensor data into Nominal"
 
-RUN pip install --no-cache-dir \
-    "nominal>=1.180.1" \
-    websockets \
-    grpcio \
-    grpcio-tools \
-    numpy \
-    pillow \
-    requests
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    BRIDGE_CONFIG=/config/bridge.yaml
 
-COPY squall_rf.proto squall_ir.proto /app/
-RUN python -m grpc_tools.protoc -I/app \
-    --python_out=/app --grpc_python_out=/app \
-    squall_rf.proto squall_ir.proto
+WORKDIR /src
+COPY pyproject.toml ./
+COPY nominal_bridge ./nominal_bridge
+# install, then generate the Couloir gRPC stubs into the installed package
+RUN pip install --no-cache-dir . \
+ && cd / && python -c "from nominal_bridge.sources.squall import load_proto; load_proto()" \
+ && rm -rf /src
 
-COPY bridge.py /app/
+# /config/bridge.yaml  the bridge config (mount yours here)
+# /plugins             optional *.py plugins, imported at start-up
+# /capture             raw recordings; mount a volume to keep them
+RUN mkdir -p /config /plugins /capture
+VOLUME ["/capture"]
+WORKDIR /
 
-ENTRYPOINT ["python", "-u", "/app/bridge.py"]
+ENTRYPOINT ["nominal-bridge"]
+CMD ["run"]

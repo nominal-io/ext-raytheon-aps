@@ -2,13 +2,17 @@
 """Render the bridge's spectrogram waterfall log to H.264 and ingest it as a
 Nominal video channel on the Raw Sensor Streams dataset.
 
-Waterfall log format (bridge/bridge.py): big-endian u64 ns timestamp + 512
-big-endian float32 log-power bins per row, ~4 rows/s, 2.048 MHz span @ 915 MHz.
+Waterfall log format (udp_iq source): big-endian u64 ns timestamp + <bins>
+big-endian float32 log-power bins per row, ~4 rows/s. A meta.json beside the log
+gives bins, sample rate and centre frequency (Hello World SK: 512 bins, 2.048 MHz
+span @ 915 MHz).
 
 Usage: render_waterfall.py <profile> <sensor_dataset_rid> [container=nominal-bridge]
+           [waterfall_dir=waterfall] [channel=rf.video.spectrogram_915mhz] [sensor_tag=squall-rf]
 """
 from __future__ import annotations
 
+import json
 import struct
 import subprocess
 import sys
@@ -17,11 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-BINS = 512
-ROW_BYTES = 8 + BINS * 4
 WINDOW_ROWS = 240          # 60 s of history per video frame
-FS_MHZ = 2.048
-FC_MHZ = 915.0
 
 # Compact "inferno-like" colormap from anchor points
 ANCHORS = np.array([
@@ -38,10 +38,19 @@ def colormap(norm: np.ndarray) -> np.ndarray:
 def main() -> None:
     profile, ds_rid = sys.argv[1], sys.argv[2]
     container = sys.argv[3] if len(sys.argv) > 3 else "nominal-bridge"
+    wf_dir = sys.argv[4] if len(sys.argv) > 4 else "waterfall"
+    channel = sys.argv[5] if len(sys.argv) > 5 else "rf.video.spectrogram_915mhz"
+    sensor = sys.argv[6] if len(sys.argv) > 6 else "squall-rf"
 
     workdir = Path(tempfile.mkdtemp(prefix="waterfall_"))
-    subprocess.run(["docker", "cp", f"{container}:/capture/waterfall",
+    subprocess.run(["docker", "cp", f"{container}:/capture/{wf_dir}",
                     str(workdir / "waterfall")], check=True, capture_output=True)
+    meta_path = workdir / "waterfall" / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+    BINS = int(meta.get("bins", 512))
+    ROW_BYTES = 8 + BINS * 4
+    FS_MHZ = (meta.get("sample_rate_hz") or 2_048_000) / 1e6
+    FC_MHZ = (meta.get("center_frequency_hz") or 915_000_000) / 1e6
     raw = b"".join(f.read_bytes()
                    for f in sorted((workdir / "waterfall").glob("wf_*.bin")))
     n_rows = len(raw) // ROW_BYTES
@@ -68,7 +77,7 @@ def main() -> None:
         ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
          "-pixel_format", "rgb24", "-video_size", f"{w}x{h}", "-framerate", "4",
          "-i", "-", "-vf", "scale=1024:480:flags=neighbor",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-g", "4",
          "rf_waterfall.mp4"], stdin=subprocess.PIPE)
     for i in frame_idx:
         img = colormap(norm[i - WINDOW_ROWS:i][::-1])  # newest row on top
@@ -81,10 +90,10 @@ def main() -> None:
     from nominal.core.client import NominalClient
     client = NominalClient.from_profile(profile)
     ds = client.get_dataset(ds_rid)
-    vf = ds.add_video("rf_waterfall.mp4", channel="rf.video.spectrogram_915mhz",
-                      frame_timestamps=frame_ts, tags={"sensor": "squall-rf"})
+    vf = ds.add_video("rf_waterfall.mp4", channel=channel,
+                      frame_timestamps=frame_ts, tags={"sensor": sensor})
     vf.poll_until_ingestion_completed()
-    print("ingested video channel rf.video.spectrogram_915mhz "
+    print(f"ingested video channel {channel} "
           f"({FC_MHZ} MHz center, {FS_MHZ} MHz span, 60 s scroll window)")
 
 if __name__ == "__main__":

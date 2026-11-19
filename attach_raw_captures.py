@@ -37,8 +37,9 @@ def main() -> None:
 
     targets = [
         ("/capture/iq_snapshots/*.sc16",
-         "Raw SC16 IQ snapshot (2 s @ 2.048 Msps, 915 MHz) tapped from the Squall RF "
-         "MEL data plane. Interleaved little-endian int16 I/Q. See matching .json sidecar."),
+         "Raw SC16 IQ snapshot tapped from the Squall RF MEL data plane. Interleaved "
+         "little-endian int16 I/Q. Sample rate and centre frequency are in the matching "
+         ".json sidecar."),
         ("/capture/iq_snapshots/*.json",
          "Provenance sidecar for the SC16 IQ snapshot: start timestamp (ns), sample "
          "rate, center frequency, byte/sample counts."),
@@ -50,10 +51,10 @@ def main() -> None:
          "timestamp, as routed by the Sleet LA-CAL."),
         ("/capture/audio_segments/audio_*.wav",
          "FM demod audio segment (S16LE mono 32 kHz WAV) from the rf-fm-demod skill's "
-         "PCM stream - the WOBR-953 broadcast as received."),
+         "PCM stream - the FM broadcast as received."),
         ("/capture/ir_frames/*.raw",
-         "Sample raw IR frame (mono8 320x200, headerless, filename = capture ns "
-         "timestamp) tapped from the Squall IR MEL data plane."),
+         "Sample raw IR frame (headerless, filename = capture ns timestamp; geometry in "
+         "meta.json beside it) tapped from the Squall IR MEL data plane."),
     ]
 
     client = NominalClient.from_profile(profile)

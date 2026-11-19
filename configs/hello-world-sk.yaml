@@ -1,0 +1,198 @@
+# nominal-bridge config for the unmodified AMS GRA Hello World Starter Kit.
+#
+# Produces the same channel names and tags as the original single-file bridge, so
+# workbooks and checklists built on that data keep working.
+#
+# ${VAR} is read from the environment (compose passes .env through);
+# ${VAR:-default} supplies a fallback.
+
+capture_dir: /capture        # raw recordings (DIS PDUs, UCI JSONL, IR frames, IQ, audio)
+plugins: [/plugins]          # every *.py here is imported at start-up
+
+sinks:
+  - type: nominal
+    targets:
+      - name: primary
+        base_url: ${NOMINAL_BASE_URL}
+        token: ${NOMINAL_TOKEN}
+        workspace_rid: ${NOMINAL_WORKSPACE_RID:-}
+        asset_rid: ${NOMINAL_ASSET_RID:-}       # events are attached to this asset
+        datasets:                               # logical stream -> dataset RID
+          dis: ${NOMINAL_DS_DIS}
+          uci: ${NOMINAL_DS_UCI}
+          sensor: ${NOMINAL_DS_SENSOR}
+          obs: ${NOMINAL_DS_OBS}
+
+events:
+  max_per_minute: 30         # hard ceiling across all sources
+  min_interval_s: 5          # the same event cannot repeat faster than this
+
+health:
+  stream: obs                # bridge.source_up / bridge.points_total per source
+
+sources:
+  # 1. Ground truth: DIS EntityState multicast from Supercell
+  - name: dis-truth
+    type: dis_entity_state
+    stream: dis
+    group: 239.1.2.3
+    port: 21100
+
+  # 2. C2: UCI 002.5.0 over the Sleet (LA-CAL) OWP WebSocket. Subscribe only.
+  - name: sleet-uci
+    type: uci_owp
+    stream: uci
+    url: ws://127.0.0.1:21402/owp
+    service_id: nominal-bridge          # authorised in sleet-services.d/nominal-bridge.toml
+    topics:                             # 'Message' -> topic mission.<message-in-kebab-case>
+      - ESM_Activity
+      - NavigationReport
+      - ObservationMeasurementReport
+      - OperatorNotification
+      - PO_Activity
+      - PositionReport
+      - PositionReportDetailed
+      - RoutePlan
+      - SignalReport
+      - SubsystemStatus
+      - SystemStatus
+      - ServiceStatus
+    presence:                           # "<label> acquired" / "<label> lost" events
+      ObservationMeasurementReport: {label: IR track, timeout_s: 5, properties: {skill: ir-search-and-track}}
+      SignalReport: {label: FM signal, timeout_s: 10, properties: {skill: rf-fm-demod}}
+    events_for: [OperatorNotification]
+
+  # 3. Squall IR: raw mono8 frames, one per datagram. The bridge registers itself
+  #    with Couloir as an extra UDP destination and reads the frame size from it.
+  - name: squall-ir
+    type: udp_frames
+    stream: sensor
+    port: ${BRIDGE_IR_TAP_PORT:-21610}
+    pixel_format: mono8
+    channel_prefix: ir
+    tags: {sensor: squall-ir}
+    couloir: {address: "127.0.0.1:21203", kind: ir, client_id: nominal-bridge-ir,
+              advertise: "127.0.0.1:${BRIDGE_IR_TAP_PORT:-21610}"}
+
+  # 4. Squall RF: raw SC16 IQ. Sample rate and centre frequency come from Couloir.
+  - name: squall-rf
+    type: udp_iq
+    stream: sensor
+    port: ${BRIDGE_RF_TAP_PORT:-21611}
+    sample_format: sc16le
+    channel_prefix: rf
+    tags: {sensor: squall-rf}
+    couloir: {address: "127.0.0.1:21203", kind: rf, client_id: nominal-bridge-rf,
+              advertise: "127.0.0.1:${BRIDGE_RF_TAP_PORT:-21611}"}
+
+  # 5. rf-fm-demod audio out (S16LE mono, 32 kHz)
+  - name: fm-audio
+    type: tcp_pcm
+    stream: sensor
+    host: 127.0.0.1
+    port: 21602
+    sample_rate_hz: 32000
+    channel_prefix: audio
+    tags: {source: rf-fm-demod}
+    record: {dir: audio_segments}
+
+  # 6. Squall control-plane status (mode, pointing, tuning)
+  - name: squall-status
+    type: couloir_status
+    stream: sensor
+    address: 127.0.0.1:21203
+    sensors:
+      - {kind: ir, tag: squall-ir}
+      - {kind: rf, tag: squall-rf}
+
+  # 7. Service metrics
+  - name: metrics
+    type: prometheus
+    stream: obs
+    interval_s: 5
+    prefixes: [sleet_, pipeline_, squall_, graupel_, supercell_, czml_, dis_, owp_, frames_, blocks_]
+    endpoints:
+      supercell: http://127.0.0.1:21300/metrics
+      sleet: http://127.0.0.1:21312/metrics
+      squall-rf: http://127.0.0.1:21314/metrics
+      squall-optical: http://127.0.0.1:21316/metrics
+      couloir: http://127.0.0.1:21318/metrics
+      graupel: http://127.0.0.1:21401/metrics
+
+# ── Nominal data model, used only by `nominal-bridge provision` ──────────────
+# A dataset whose env variable is already set is reused as is; otherwise it is found
+# by exact name, and created only when no match exists.
+model:
+  labels: [ams-gra, open-arsenal]
+  datasets:
+    dis:
+      env: NOMINAL_DS_DIS
+      name: AMS GRA - DIS Ground Truth
+      description: >-
+        IEEE 1278.1 DIS EntityState ground truth from the Supercell environment sim.
+        Per-entity position, velocity and orientation, tagged by entity.
+    uci:
+      env: NOMINAL_DS_UCI
+      name: AMS GRA - UCI C2 Messages
+      description: UCI 002.5.0 messages captured from the Sleet LA-CAL OWP WebSocket.
+    sensor:
+      env: NOMINAL_DS_SENSOR
+      name: AMS GRA - Raw Sensor Streams
+      description: >-
+        Telemetry derived from the raw sensor data planes (IR frames, RF IQ, audio)
+        plus Squall control-plane status.
+    obs:
+      env: NOMINAL_DS_OBS
+      name: AMS GRA - Observability Metrics
+      description: Prometheus metrics from the kit services and bridge health, tagged by service.
+  asset:
+    env: NOMINAL_ASSET_RID
+    name: AMS GRA Hello World Starter Kit
+    description: >-
+      Open Arsenal AMS GRA Hello World Starter Kit simulation: Eagle-1 ownship with
+      simulated RF and IR sensors, two red bandits, and a fixed FM radio tower.
+    labels: [simulation]
+    properties: {standard: AMS GRA, ownship: Eagle-1, scenario: Kitty Hawk pentagon}
+    scopes:
+      dis_truth: {stream: dis}
+      uci_c2: {stream: uci}
+      raw_sensor: {stream: sensor}
+      obs_metrics: {stream: obs}
+      # tag-scoped views so per-service state channels resolve to a single series
+      uci_svc_ir: {stream: uci, tags: {service: ir-search-and-track}}
+      uci_svc_rf: {stream: uci, tags: {service: rf-fm-demod}}
+      uci_sub_ir: {stream: uci, tags: {subsystem: squall.ir.mfa}}
+      uci_sub_rf: {stream: uci, tags: {subsystem: squall.rf.mfa}}
+      obs_sleet: {stream: obs, tags: {service: sleet}}
+      obs_supercell: {stream: obs, tags: {service: supercell}}
+      obs_graupel: {stream: obs, tags: {service: graupel}}
+  entity_assets:               # one asset per platform over the shared, tagged datasets
+    - env: NOMINAL_ASSET_EAGLE
+      name: Eagle-1 (AMS GRA)
+      description: Blue ownship carrying the Squall RF and IR sensors
+      properties: {entity: Eagle-1, force: FRIENDLY}
+      scopes:
+        dis_truth: {stream: dis, tags: {entity: Eagle-1}}
+        uci_c2: {stream: uci, tags: {entity: Eagle-1}}
+        raw_sensor: {stream: sensor}
+    - env: NOMINAL_ASSET_BANDIT1
+      name: Bandit-1 (AMS GRA)
+      description: Red bandit lead aircraft
+      properties: {entity: Bandit-1, force: OPPOSING}
+      scopes: {dis_truth: {stream: dis, tags: {entity: Bandit-1}}}
+    - env: NOMINAL_ASSET_BANDIT2
+      name: Bandit-2 (AMS GRA)
+      description: Red bandit wing aircraft
+      properties: {entity: Bandit-2, force: OPPOSING}
+      scopes: {dis_truth: {stream: dis, tags: {entity: Bandit-2}}}
+    # The tag value is the DIS marking. Kits before v2026.10 called the tower WOBR-953.
+    - env: NOMINAL_ASSET_FM_TOWER
+      name: FM-95.3 (AMS GRA)
+      description: Fixed FM radio tower (sim)
+      properties: {entity: FM-95.3, force: NEUTRAL}
+      scopes: {dis_truth: {stream: dis, tags: {entity: FM-95.3}}}
+  run:
+    env: NOMINAL_RUN_RID
+    name: "AMS GRA Sim Session %Y-%m-%d %H:%MZ"
+    description: Live capture session streamed into Nominal by nominal-bridge.
+    properties: {capture: nominal-bridge}
